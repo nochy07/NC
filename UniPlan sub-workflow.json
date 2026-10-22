@@ -1,0 +1,989 @@
+{
+  "name": "UniPlan sub-workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "16a6277b-2e33-4196-8826-9ee5182e8c75",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        5056,
+        2192
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU",
+          "mode": "list",
+          "cachedResultName": "New no code sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Classes",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "user_id",
+              "lookupValue": "={{ $json.userId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a89f3952-774a-437f-a0cf-7febb868994f",
+      "name": "Get User Classes",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        5296,
+        2192
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IcYtN37RN88Qi605",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// UniPlan - Process Operation (sub-workflow). All reads arrive pre-filtered by user_id and are re-checked here.\nconst TIMEZONE = 'Europe/Paris';   // any IANA name, e.g. 'America/New_York'\nconst MAX_CLASSES_PER_USER = 100;\nconst DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];\n\nconst req = $('Sub-workflow Trigger').first().json;\nconst operation = String(req.operation || '');\nconst userId = String(req.userId || '');\nconst chatId = String(req.chatId || '');\nif (!userId || !chatId) throw new Error('Missing userId or chatId');\n\nconst out = (o) => [{ json: Object.assign({ operation, userId, chatId, writeAction: 'none', status: 'ok' }, o) }];\nconst dayIndex = (d) => DAYS.findIndex(x => x.toLowerCase() === String(d || '').trim().toLowerCase());\nconst toMin = (t) => {\n  if (t === null || t === undefined || t === '') return NaN;\n  if (typeof t === 'number') return t < 1 ? Math.round(t * 1440) : NaN;   // Sheets time serial fallback\n  const m = String(t).trim().match(/^(\\d{1,2}):(\\d{2})(?::\\d{2})?$/);\n  return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : NaN;\n};\nconst fmt = (min) => String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0');\nconst human = (mins) => {\n  const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;\n  const p = [];\n  if (d) p.push(d + 'd'); if (h) p.push(h + 'h'); if (m || !p.length) p.push(m + 'm');\n  return p.join(' ');\n};\n\nconst str = (v) => (v === undefined || v === null) ? '' : String(v).trim();\nconst labelOf = (code, desc) => [code, desc].filter(Boolean).join(' – ') || '(untitled)';\nconst extrasOf = (room, teacher, credits) => '(' + (room ? 'Room ' + room : 'Room TBD') + ')' + (teacher ? ' · ' + teacher : '') + (credits ? ' · ' + credits + ' cr' : '');\nconst line = (r) => '• ' + fmt(r.start) + '–' + fmt(r.end) + ' ' + labelOf(r.code, r.desc) + ' ' + extrasOf(r.room, r.teacher, r.credits) + ' [' + r.classId + ']';\n\n// Only this user's rows (defence in depth on top of the Sheets lookup filter)\nconst owned = $input.all().map(i => i.json)\n  .filter(r => r && r.class_id && String(r.user_id) === userId);\nconst rows = owned.map(r => ({\n  classId: str(r.class_id), code: str(r.class_code), desc: str(r.class_description),\n  day: dayIndex(r.day), start: toMin(r.start_time), end: toMin(r.end_time),\n  room: str(r.room), teacher: str(r.teacher), credits: str(r.credits)\n})).filter(r => r.day >= 0 && !isNaN(r.start) && !isNaN(r.end))\n  .sort((a, b) => a.day - b.day || a.start - b.start || a.end - b.end);\n\nif (operation === 'schedule') {\n  if (!rows.length) {\n    return out({ status: 'empty', logAction: 'schedule', logStatus: 'success', logDetails: 'classes=0',\n      replyText: '📭 Your timetable is empty.\\n\\nAdd a class with:\\n/add ClassName | Day | StartTime | EndTime | Room\\nExample: /add Databases | Monday | 10:00 | 12:00 | B204' });\n  }\n  let text = '📅 Your timetable (' + rows.length + (rows.length === 1 ? ' class' : ' classes') + ')\\n';\n  DAYS.forEach((d, i) => {\n    const list = rows.filter(r => r.day === i);\n    if (!list.length) return;\n    text += '\\n' + d + '\\n';\n    list.forEach(r => { text += line(r) + '\\n'; });\n  });\n  text += '\\nRemove a class with /drop ClassID';\n  if (text.length > 3900) text = text.slice(0, 3850) + '\\n… (truncated)';\n  return out({ replyText: text, logAction: 'schedule', logStatus: 'success', logDetails: 'classes=' + rows.length });\n}\n\nconst dayList = (idx, label) => {\n  const list = rows.filter(r => r.day === idx);\n  if (!list.length) {\n    return out({ status: 'empty', logAction: operation, logStatus: 'success', logDetails: 'classes=0',\n      replyText: '🎉 No classes ' + (label ? label + ' (' + DAYS[idx] + ')' : 'on ' + DAYS[idx]) + '.' });\n  }\n  let text = '📅 ' + (label ? label.charAt(0).toUpperCase() + label.slice(1) + ' – ' : '') + DAYS[idx] + ' (' + list.length + (list.length === 1 ? ' class' : ' classes') + ')\\n\\n';\n  list.forEach(r => { text += line(r) + '\\n'; });\n  return out({ replyText: text.trim(), logAction: operation, logStatus: 'success', logDetails: 'classes=' + list.length });\n};\nif (operation === 'today' || operation === 'tomorrow') {\n  const now = $now.setZone(TIMEZONE);\n  if (!now.isValid) throw new Error('Invalid TIMEZONE constant in Process Operation node: ' + TIMEZONE);\n  const idx = (now.weekday - 1 + (operation === 'tomorrow' ? 1 : 0)) % 7;\n  return dayList(idx, operation);\n}\nif (operation === 'day') {\n  const idx = dayIndex(req.day);\n  if (idx < 0) return out({ status: 'rejected', logAction: 'day', logStatus: 'rejected', logDetails: 'invalid day', replyText: '⚠️ Invalid day. Use Monday to Sunday.' });\n  return dayList(idx, '');\n}\n\nif (operation === 'next') {\n  if (!rows.length) {\n    return out({ status: 'empty', logAction: 'next', logStatus: 'success', logDetails: 'classes=0',\n      replyText: '📭 You have no classes yet. Add one with /add (see /help).' });\n  }\n  const now = $now.setZone(TIMEZONE);\n  if (!now.isValid) throw new Error('Invalid TIMEZONE constant in Process Operation node: ' + TIMEZONE);\n  const nowDay = now.weekday - 1;                 // Monday = 0\n  const nowMin = now.hour * 60 + now.minute;\n  const ongoing = rows.filter(r => r.day === nowDay && r.start <= nowMin && nowMin < r.end);\n  let best = null;\n  rows.forEach(r => {\n    let total = ((r.day - nowDay + 7) % 7) * 1440 + r.start - nowMin;\n    let wrapped = false;\n    if (total < 0) { total += 7 * 1440; wrapped = true; }   // already started: next occurrence is next week\n    if (!best || total < best.total) best = { r, total, wrapped };\n  });\n  const calDays = ((best.r.day - nowDay + 7) % 7) + (best.wrapped ? 7 : 0);\n  const when = calDays === 0 ? 'today' : calDays === 1 ? 'tomorrow' : calDays === 7 ? 'next ' + DAYS[best.r.day] : 'on ' + DAYS[best.r.day];\n  let text = '';\n  if (ongoing.length) text += '▶️ In progress: ' + ongoing.map(r => labelOf(r.code, r.desc) + ' (until ' + fmt(r.end) + ')').join(', ') + '\\n\\n';\n  text += '⏭ Next class: ' + labelOf(best.r.code, best.r.desc) + '\\n' + DAYS[best.r.day] + ' ' + fmt(best.r.start) + '–' + fmt(best.r.end) +\n    ' ' + extrasOf(best.r.room, best.r.teacher, best.r.credits) + '\\nStarts ' + when + (best.total === 0 ? ' (now!)' : ' (in ' + human(best.total) + ')') +\n    '\\n\\nTimezone: ' + TIMEZONE;\n  return out({ replyText: text, logAction: 'next', logStatus: 'success', logDetails: 'class_id=' + best.r.classId });\n}\n\nif (operation === 'add') {\n  const code = str(req.classCode), desc = str(req.classDescription), room = str(req.room), teacher = str(req.teacher), credits = str(req.credits);\n  const day = dayIndex(req.day), start = toMin(req.startTime), end = toMin(req.endTime);\n  if ((!code && !desc) || day < 0 || isNaN(start) || isNaN(end) || end <= start) {\n    return out({ status: 'rejected', logAction: 'add', logStatus: 'rejected', logDetails: 'sub-workflow validation failed',\n      replyText: '⚠️ Invalid class details. A class needs a code or description, a day, and a valid start/end time. Send /help for the syntax.' });\n  }\n  if (rows.length >= MAX_CLASSES_PER_USER) {\n    return out({ status: 'rejected', logAction: 'add', logStatus: 'rejected', logDetails: 'class limit reached',\n      replyText: '⚠️ You have reached the limit of ' + MAX_CLASSES_PER_USER + ' classes. Remove one with /drop first.' });\n  }\n  const conflicts = rows.filter(r => r.day === day && start < r.end && end > r.start);   // touching times are allowed\n  if (conflicts.length) {\n    return out({ status: 'conflict', logAction: 'add', logStatus: 'conflict',\n      logDetails: 'overlaps=' + conflicts.map(c => c.classId).join(','),\n      replyText: '⚠️ Scheduling conflict – nothing was saved.\\n' + labelOf(code, desc) + ' (' + DAYS[day] + ' ' + fmt(start) + '–' + fmt(end) +\n        ') overlaps with:\\n' + conflicts.map(c => '• ' + labelOf(c.code, c.desc) + ' ' + fmt(c.start) + '–' + fmt(c.end) + ' [' + c.classId + ']').join('\\n') +\n        '\\n\\nPick another time or /drop the existing class first.' });\n  }\n  const taken = new Set(owned.map(r => String(r.class_id).toUpperCase()));\n  let classId;\n  do {\n    classId = 'C' + Math.floor(Date.now() / 1000).toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();\n  } while (taken.has(classId));\n  const missing = [!room && 'room', !teacher && 'teacher', !credits && 'credits'].filter(Boolean);\n  return out({\n    writeAction: 'append',\n    row: { class_id: classId, user_id: userId, class_code: code, class_description: desc, day: DAYS[day], start_time: fmt(start), end_time: fmt(end), room, teacher, credits },\n    logAction: 'add', logStatus: 'success', logDetails: 'class_id=' + classId,\n    replyText: '✅ Class added\\n' + labelOf(code, desc) + '\\n' + DAYS[day] + ' ' + fmt(start) + '–' + fmt(end) + ' ' + extrasOf(room, teacher, credits) + '\\nID: ' + classId +\n      (missing.length ? '\\n\\nStill unknown: ' + missing.join(', ') + '. Fill in later with /edit ' + classId + ' | ' + missing[0] + ' | value' : '')\n  });\n}\n\nif (operation === 'edit') {\n  const target = String(req.classId || '').trim().toUpperCase();\n  const field = String(req.field || '');\n  const value = str(req.value);\n  const OPTIONAL = ['class_code', 'class_description', 'room', 'teacher', 'credits'];\n  const rej = (msg, why) => out({ status: 'rejected', logAction: 'edit', logStatus: 'rejected', logDetails: why, replyText: msg });\n  if (![...OPTIONAL, 'day', 'start_time', 'end_time'].includes(field)) return rej('⚠️ Invalid edit request. Send /help for the syntax.', 'invalid request');\n  const cur = rows.find(r => r.classId.toUpperCase() === target);   // owned rows only\n  if (!cur) {\n    return out({ status: 'not_found', logAction: 'edit', logStatus: 'not_found', logDetails: 'class_id=' + target.slice(0, 32),\n      replyText: 'No class with ID ' + target.slice(0, 32) + ' was found in your timetable.\\nUse /schedule to see your class IDs.' });\n  }\n  const n = { code: cur.code, desc: cur.desc, day: cur.day, start: cur.start, end: cur.end, room: cur.room, teacher: cur.teacher, credits: cur.credits };\n  if (field === 'class_code') n.code = value;\n  else if (field === 'class_description') n.desc = value;\n  else if (field === 'room') n.room = value;\n  else if (field === 'teacher') n.teacher = value;\n  else if (field === 'credits') n.credits = value;\n  else if (field === 'day') { const d = dayIndex(value); if (d < 0) return rej('⚠️ Invalid day.', 'invalid day'); n.day = d; }\n  else { const t = toMin(value); if (isNaN(t)) return rej('⚠️ Invalid time. Use HH:MM.', 'invalid time'); if (field === 'start_time') n.start = t; else n.end = t; }\n  if (!n.code && !n.desc) return rej('⚠️ A class needs at least a code or a description. Nothing was changed.', 'no class identifier');\n  if (n.end <= n.start) return rej('⚠️ End time must be later than start time (' + fmt(n.start) + ' → ' + fmt(n.end) + '). Nothing was changed.', 'end not after start');\n  const conflicts = rows.filter(r => r.classId !== cur.classId && r.day === n.day && n.start < r.end && n.end > r.start);\n  if (conflicts.length) {\n    return out({ status: 'conflict', logAction: 'edit', logStatus: 'conflict', logDetails: 'overlaps=' + conflicts.map(c => c.classId).join(','),\n      replyText: '⚠️ Scheduling conflict – nothing was changed.\\n' + labelOf(n.code, n.desc) + ' (' + DAYS[n.day] + ' ' + fmt(n.start) + '–' + fmt(n.end) +\n        ') would overlap with:\\n' + conflicts.map(c => '• ' + labelOf(c.code, c.desc) + ' ' + fmt(c.start) + '–' + fmt(c.end) + ' [' + c.classId + ']').join('\\n') });\n  }\n  return out({\n    writeAction: 'edit',\n    row: { class_id: cur.classId, user_id: userId, class_code: n.code, class_description: n.desc, day: DAYS[n.day], start_time: fmt(n.start), end_time: fmt(n.end), room: n.room, teacher: n.teacher, credits: n.credits },\n    logAction: 'edit', logStatus: 'success', logDetails: 'class_id=' + cur.classId + '; field=' + field,\n    replyText: '✏️ Class updated\\n' + labelOf(n.code, n.desc) + '\\n' + DAYS[n.day] + ' ' + fmt(n.start) + '–' + fmt(n.end) + ' ' + extrasOf(n.room, n.teacher, n.credits) + '\\nID: ' + cur.classId\n  });\n}\n\nif (operation === 'import') {\n  const meetings = Array.isArray(req.meetings) ? req.meetings : [];\n  const notes = (Array.isArray(req.skipped) ? req.skipped : []).map(x => String(x).slice(0, 160));\n  const accepted = [];\n  const taken = new Set(owned.map(r => String(r.class_id).toUpperCase()));\n  const newId = () => {\n    let id;\n    do { id = 'C' + Math.floor(Date.now() / 1000).toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase(); } while (taken.has(id));\n    taken.add(id);\n    return id;\n  };\n  meetings.slice(0, 20).forEach((m) => {\n    const code = str(m.classCode), desc = str(m.classDescription), room = str(m.room), teacher = str(m.teacher), credits = str(m.credits);\n    const day = dayIndex(m.day), start = toMin(m.startTime), end = toMin(m.endTime);\n    const lbl = labelOf(code, desc);\n    if ((!code && !desc) || day < 0 || isNaN(start) || isNaN(end) || end <= start) { notes.push(lbl + ': invalid details, skipped.'); return; }\n    if (rows.length + accepted.length >= MAX_CLASSES_PER_USER) { notes.push(lbl + ' ' + DAYS[day] + ': class limit (' + MAX_CLASSES_PER_USER + ') reached, skipped.'); return; }\n    const clash = rows.concat(accepted).filter(r => r.day === day && start < r.end && end > r.start);\n    if (clash.length) {\n      notes.push(lbl + ' ' + DAYS[day] + ' ' + fmt(start) + '–' + fmt(end) + ' overlaps ' + clash.map(c => labelOf(c.code, c.desc) + ' ' + fmt(c.start) + '–' + fmt(c.end)).join(', ') + ' – skipped.');\n      return;\n    }\n    accepted.push({ classId: newId(), code, desc, day, start, end, room, teacher, credits });\n  });\n  if (!accepted.length) {\n    return out({ status: 'rejected', logAction: 'import', logStatus: 'rejected', logDetails: 'added=0; skipped=' + notes.length + '; meetings_read=' + meetings.length,\n      replyText: '⚠️ Nothing was imported.' + (meetings.length ? '' : '\\nI could not find any readable classes in that image.') +\n        (notes.length ? '\\n\\n' + notes.map(n => '• ' + n).join('\\n') : '') + '\\n\\nTry a clearer, tighter screenshot, or add classes manually with /add.' });\n  }\n  const unknown = [accepted.some(a => !a.room) && 'room', accepted.some(a => !a.teacher) && 'teacher', accepted.some(a => !a.credits) && 'credits'].filter(Boolean);\n  let text = '📥 Imported ' + accepted.length + (accepted.length === 1 ? ' class meeting' : ' class meetings') + ':\\n\\n' + accepted.map(line).join('\\n');\n  if (notes.length) text += '\\n\\n⚠️ Not imported:\\n' + notes.map(n => '• ' + n).join('\\n');\n  if (unknown.length) text += '\\n\\nNot found in the image: ' + unknown.join(', ') + ' (add later with /edit).';\n  text += '\\n\\nPlease double-check the details – fix with /edit or remove with /drop.';\n  if (text.length > 3900) text = text.slice(0, 3850) + '\\n… (truncated)';\n  return out({\n    writeAction: 'import',\n    rows: accepted.map(a => ({ class_id: a.classId, user_id: userId, class_code: a.code, class_description: a.desc, day: DAYS[a.day],\n      start_time: fmt(a.start), end_time: fmt(a.end), room: a.room, teacher: a.teacher, credits: a.credits })),\n    logAction: 'import', logStatus: 'success',\n    logDetails: 'added=' + accepted.length + '; skipped=' + notes.length + '; class_ids=' + accepted.map(a => a.classId).join(','),\n    replyText: text\n  });\n}\n\nif (operation === 'drop') {\n  const target = String(req.classId || '').trim().toUpperCase();\n  const match = owned.find(r => String(r.class_id).trim().toUpperCase() === target);   // owned rows only\n  if (!match) {\n    return out({ status: 'not_found', logAction: 'drop', logStatus: 'not_found', logDetails: 'class_id=' + target.slice(0, 32),\n      replyText: 'No class with ID ' + target.slice(0, 32) + ' was found in your timetable.\\nUse /schedule to see your class IDs.' });\n  }\n  const cid = String(match.class_id).trim();\n  return out({\n    writeAction: 'drop', classId: cid,\n    logAction: 'drop', logStatus: 'success', logDetails: 'class_id=' + cid,\n    replyText: '🗑 Removed: ' + labelOf(str(match.class_code), str(match.class_description)) + ' (' + str(match.day) + ' ' + str(match.start_time) + '–' + str(match.end_time) + ')'\n  });\n}\n\nthrow new Error('Unsupported operation: ' + operation);\n"
+      },
+      "id": "6152a030-4ab2-4067-ae4b-bdd3fe9d885c",
+      "name": "Process Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5536,
+        2192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "57f446c0-4c9e-542d-9742-f7bc93d0bc69",
+              "leftValue": "={{ $json.writeAction }}",
+              "rightValue": "none",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e98ffcfa-687f-4140-9b0c-2291fe8fc5b7",
+      "name": "Write Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5776,
+        2192
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d3059763-f3fb-5f5d-8d59-5e0d803adf7a",
+                    "leftValue": "={{ $json.writeAction }}",
+                    "rightValue": "append",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "append"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "29c22ca1-4949-5359-901e-a63f7becfa0a",
+                    "leftValue": "={{ $json.writeAction }}",
+                    "rightValue": "edit",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "edit"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "9c8b877c-0d0f-53fc-ad88-fd996684822b",
+                    "leftValue": "={{ $json.writeAction }}",
+                    "rightValue": "drop",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "drop"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "40a7323c-4d49-5883-a4ee-b87ffe6be6f2",
+                    "leftValue": "={{ $json.writeAction }}",
+                    "rightValue": "import",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "import"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d455c5ec-1943-4b68-aef1-f49280e7b564",
+      "name": "Route Write Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        6016,
+        2096
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// one item per class meeting so 'Append Class' writes each row\nreturn $input.first().json.rows.map(r => ({ json: { row: r } }));"
+      },
+      "id": "70fd2dbc-04cf-46e5-ab82-63e91dc6855d",
+      "name": "Expand Import Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6288,
+        1824
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU",
+          "mode": "list",
+          "cachedResultName": "New no code sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Classes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "class_id": "={{ $json.row.class_id }}",
+            "user_id": "={{ $json.row.user_id }}",
+            "class_code": "={{ $json.row.class_code }}",
+            "class_description": "={{ $json.row.class_description }}",
+            "day": "={{ $json.row.day }}",
+            "start_time": "={{ $json.row.start_time }}",
+            "end_time": "={{ $json.row.end_time }}",
+            "room": "={{ $json.row.room }}",
+            "teacher": "={{ $json.row.teacher }}",
+            "credits": "={{ $json.row.credits }}"
+          },
+          "matchingColumns": [
+            "class_id"
+          ],
+          "schema": [
+            {
+              "id": "class_id",
+              "displayName": "class_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_code",
+              "displayName": "class_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_description",
+              "displayName": "class_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "day",
+              "displayName": "day",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "room",
+              "displayName": "room",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "teacher",
+              "displayName": "teacher",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "credits",
+              "displayName": "credits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "61aef6d0-e3eb-4de4-8ec2-eaa0edcc879f",
+      "name": "Append Class",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6288,
+        2016
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IcYtN37RN88Qi605",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU",
+          "mode": "list",
+          "cachedResultName": "New no code sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Classes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "class_id": "={{ $json.row.class_id }}",
+            "user_id": "={{ $json.row.user_id }}",
+            "class_code": "={{ $json.row.class_code }}",
+            "class_description": "={{ $json.row.class_description }}",
+            "day": "={{ $json.row.day }}",
+            "start_time": "={{ $json.row.start_time }}",
+            "end_time": "={{ $json.row.end_time }}",
+            "room": "={{ $json.row.room }}",
+            "teacher": "={{ $json.row.teacher }}",
+            "credits": "={{ $json.row.credits }}"
+          },
+          "matchingColumns": [
+            "class_id"
+          ],
+          "schema": [
+            {
+              "id": "class_id",
+              "displayName": "class_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_code",
+              "displayName": "class_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_description",
+              "displayName": "class_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "day",
+              "displayName": "day",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "room",
+              "displayName": "room",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "teacher",
+              "displayName": "teacher",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "credits",
+              "displayName": "credits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "b4b809a4-6b64-480d-833c-e64de2763dc8",
+      "name": "Update Class",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6288,
+        2176
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IcYtN37RN88Qi605",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU",
+          "mode": "list",
+          "cachedResultName": "New no code sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Classes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "class_id": "={{ $json.classId }}",
+            "user_id": "__dropped__",
+            "class_code": "-",
+            "class_description": "-",
+            "day": "-",
+            "start_time": "-",
+            "end_time": "-",
+            "room": "-",
+            "teacher": "-",
+            "credits": "-"
+          },
+          "matchingColumns": [
+            "class_id"
+          ],
+          "schema": [
+            {
+              "id": "class_id",
+              "displayName": "class_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_code",
+              "displayName": "class_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "class_description",
+              "displayName": "class_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "day",
+              "displayName": "day",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "room",
+              "displayName": "room",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "teacher",
+              "displayName": "teacher",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "credits",
+              "displayName": "credits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "98138362-36f9-4b53-a2f1-8538f3009c09",
+      "name": "Mark Class Dropped",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6288,
+        2336
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IcYtN37RN88Qi605",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU",
+          "mode": "list",
+          "cachedResultName": "New no code sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 768312421,
+          "mode": "list",
+          "cachedResultName": "ActivityLog",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1AW8Z45grCZtVgUKJXQ77DkylBmdDdlfecb71_RHd3pU/edit#gid=768312421"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toUTC().toISO() }}",
+            "user_id": "={{ $('Process Operation').first().json.userId }}",
+            "action": "={{ $('Process Operation').first().json.logAction }}",
+            "status": "={{ $('Process Operation').first().json.logStatus }}",
+            "details": "={{ $('Process Operation').first().json.logDetails }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "2ae36fea-9dca-443e-a019-28f8a7c291cd",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6544,
+        2192
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IcYtN37RN88Qi605",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7fcf69ac-86bb-5802-bfa6-88a3ef26b1d9",
+              "name": "chatId",
+              "type": "string",
+              "value": "={{ $('Process Operation').first().json.chatId }}"
+            },
+            {
+              "id": "a6bbd342-f276-5e86-878b-7fbc4be6c3d0",
+              "name": "replyText",
+              "type": "string",
+              "value": "={{ $('Process Operation').first().json.replyText }}"
+            },
+            {
+              "id": "ab6d8539-7835-5806-aa18-42440b084da4",
+              "name": "status",
+              "type": "string",
+              "value": "={{ $('Process Operation').first().json.status }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7ac9d221-7b9d-4531-8d8e-6a8c17fbfe9d",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        6784,
+        2192
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "content": "## UniPlan sub-workflow\n- Set the spreadsheet ID + Google Sheets credential on the 5 Sheets nodes.\n- Timezone for /next: edit TIMEZONE at the top of the Process Operation code node.\n- 'Append Class' uses append-or-update on class_id so retries cannot create duplicates; /import feeds it one item per meeting.\n- 'Mark Class Dropped' tombstones the row (user_id = __dropped__) – idempotent and safe against row-shift races.\n- Errors bubble up to the main workflow, which notifies the user.",
+        "height": 200,
+        "width": 620,
+        "color": "#A8C6FE"
+      },
+      "id": "eb81c52f-57ca-48b2-aee5-b5c989a0980f",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        5152,
+        1888
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get User Classes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User Classes": {
+      "main": [
+        [
+          {
+            "node": "Process Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Operation": {
+      "main": [
+        [
+          {
+            "node": "Write Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Needed?": {
+      "main": [
+        [
+          {
+            "node": "Route Write Type",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Write Type": {
+      "main": [
+        [
+          {
+            "node": "Append Class",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Class",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Class Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Expand Import Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Import Rows": {
+      "main": [
+        [
+          {
+            "node": "Append Class",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Class": {
+      "main": [
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Class": {
+      "main": [
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Class Dropped": {
+      "main": [
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Activity": {
+      "main": [
+        [
+          {
+            "node": "Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e8b8537a-9d08-44b1-9d91-c091ff44fee7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "44ac11f2a4be612ed0737fdb40cff45b5692e1d5f0cf750cc40db5d7d7240f74"
+  },
+  "nodeGroups": [],
+  "id": "8PvK7zju4bYa5Zmn",
+  "tags": []
+}
