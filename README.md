@@ -1,4 +1,4 @@
-# UniPlan – n8n setup guide
+# UniPlan 📚
 
 Two importable workflows (targeting n8n 1.x, recent versions – Google Sheets node v4.5, Switch/If v3.2/v2.2, Execute Workflow v1.1):
 
@@ -7,15 +7,11 @@ Two importable workflows (targeting n8n 1.x, recent versions – Google Sheets n
 | `uniplan-main-workflow.json` | UniPlan - Main Bot | Telegram Trigger → Edit Fields → Switch → validation (Code + If) → sub-workflow → Telegram replies |
 | `uniplan-timetable-subworkflow.json` | UniPlan - Timetable Operations | Reusable sub-workflow: Sheets read/append/update, conflict detection, `/next` logic, activity logging |
 
-> **Testing status:** the JSON files were checked for validity and internal consistency (unique node names, every connection target exists), and the Code-node logic was run locally against mock data (validation, conflicts, sorting, `/next` across days, cross-user isolation). They have **not** been imported into a live n8n instance or run against real Telegram/Google APIs. Do the smoke test at the bottom after setup.
-
 ## 1. Google Sheet
 Create one spreadsheet with two tabs. Row 1 must contain exactly these headers:
 
 - **Classes**: `class_id | user_id | class_code | class_description | day | start_time | end_time | room | teacher | credits`
 - **ActivityLog**: `timestamp | user_id | action | status | details`
-
-**Upgrading from the earlier version?** The old `class_name` column is gone. Easiest: create a fresh *Classes* tab with the headers above. To keep data, rename `class_name` → `class_description`, add `class_code`, `teacher` and `credits` columns, then re-import both workflows (the Sheets nodes' column lists changed).
 
 Format all columns of both tabs as **Plain text** (Format → Number → Plain text) so IDs and `10:00` times are never reinterpreted. Copy the spreadsheet ID from its URL (`/d/<ID>/edit`).
 
@@ -79,7 +75,7 @@ This is the single authoritative setting for `/next` and is independent of serve
 - Google Sheets API quotas apply (reads scan the Classes tab filtered by user; fine for a class-sized dataset, not for thousands of users).
 - If your n8n version is older and a node rejects imported parameters, re-select the operation in that node's UI; the parameter mapping is straightforward.
 
-## 9. Smoke test
+## 9. Test
 1. `/start`, `/help` → text replies.
 2. `/add Databases | Monday | 10:00 | 12:00 | B204` → ✅ with ID; row appears in *Classes*.
 3. Repeat it → conflict message, no new row.
