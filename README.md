@@ -4,8 +4,8 @@ Two importable workflows (targeting n8n 1.x, recent versions – Google Sheets n
 
 | File | Workflow name | Purpose |
 |---|---|---|
-| `uniplan-main-workflow.json` | UniPlan - Main Bot | Telegram Trigger → Edit Fields → Switch → validation (Code + If) → sub-workflow → Telegram replies |
-| `uniplan-timetable-subworkflow.json` | UniPlan - Timetable Operations | Reusable sub-workflow: Sheets read/append/update, conflict detection, `/next` logic, activity logging |
+| `uniplan-main-workflow.json` | UniPlan Main Bot | Telegram Trigger → Edit Fields → Switch → validation (Code + If) → sub-workflow → Telegram replies |
+| `uniplan-timetable-subworkflow.json` | UniPlan Timetable Operations | Reusable sub-workflow: Sheets read/append/update, conflict detection, `/next` logic, activity logging |
 
 ## 1. Google Sheet
 Create one spreadsheet with two tabs. Row 1 must contain exactly these headers:
