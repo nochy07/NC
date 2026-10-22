@@ -15,7 +15,7 @@ Create one spreadsheet with two tabs. Row 1 must contain exactly these headers:
 
 Format all columns of both tabs as **Plain text** (Format → Number → Plain text) so IDs and `10:00` times are never reinterpreted. Copy the spreadsheet ID from its URL (`/d/<ID>/edit`).
 
-## 2. Credentials (create in n8n, then select on nodes)
+## 2. Credentials
 - **Telegram API**: create a bot with @BotFather (`/newbot`), paste the token into a Telegram credential. Optionally register the command menu with `/setcommands`.
 - **Google Sheets OAuth2** (or service account shared with the sheet as Editor).
 - **OpenAI API** (only for `/import`): used by the *Call Vision Model* HTTP Request node (predefined credential type *OpenAI*).
@@ -26,7 +26,7 @@ Placeholders to replace after import: `REPLACE_WITH_CREDENTIAL_ID`, `REPLACE_WIT
 
 Nodes needing the spreadsheet ID + Sheets credential: *Log Rejected Command* (main); *Get User Classes*, *Append Class*, *Update Class*, *Mark Class Dropped*, *Log Activity* (sub-workflow).
 
-## 3. Import and link (order matters)
+## 3. Import and link 
 1. Import **UniPlan - Timetable Operations**, configure its Sheets nodes, **save**, and note its workflow ID (the number in its URL).
 2. Import **UniPlan - Main Bot**, set Telegram credentials on all Telegram nodes, set the sheet on *Log Rejected Command*, and in *Run Timetable Operation* choose the sub-workflow (or paste its ID).
 3. For `/import`: open *Prepare Vision Request* and set `const MODEL = '...'` to a vision-capable chat model available to your OpenAI account (it deliberately ships as a placeholder and the command fails with a clear error until you set it).
